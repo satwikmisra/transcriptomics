@@ -1,0 +1,100 @@
+---
+title: "Spatial Data Clustering"
+output: html_document
+---
+
+Guides:
+https://satijalab.org/seurat/articles/spatial_vignette.html#slide-seq-1
+
+https://satijalab.org/seurat/articles/pbmc3k_tutorial.html
+
+https://hbctraining.github.io/scRNA-seq/lessons/06_SC_SCT_and_integration.html
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+library(SeuratData)
+```
+
+## 
+Load in Glioblastoma spatial transcriptomics data into a Seurat object.
+```{r load}
+dirr = "C:/Users/satwik/OneDrive/Documents/bcm/data"
+fname = "Parent_Visium_Human_Glioblastoma_filtered_feature_bc_matrix.h5"
+Gobj = Load10X_Spatial(dirr, fname, assay = "Spatial", slice = "slice1")
+head(x = rownames(x= Gobj))
+names(x = Gobj)
+```
+
+## 
+No QC was actually done, but the data could possibly be segregated by either feature or individual element count in this step. Violin plots of the feature/element counts of this assay are show below and collated with the spatial positioning data on the slice image.  
+```{r qc step, echo=FALSE}
+#preview
+head(Gobj@meta.data, 5)
+VlnPlot(Gobj, features = c("nCount_Spatial", "nFeature_Spatial"), ncol = 2)
+SpatialFeaturePlot(Gobj, "nCount_Spatial", ncol = 2) + theme(legend.position = "left")
+SpatialFeaturePlot(Gobj, "nFeature_Spatial", ncol = 2) + theme(legend.position = "left")
+#2nd spatial plot is inherently useless lol
+#data could be filtered below
+#Gobj = subset(Gobj, subset = nCount_Spatial > XXX & nFeature_Spatial < YYYY)
+```
+
+As per the spatial overlaid element count plot, molecular counts vary in a way that seems to be dependent on the position within  the splice (density seems to change in regions rather than completely 'randomly'), so probabilistic negative binomial model linked with different sequencing attributes is used to normalize - SCTransform directed by the guide - instead of a typical unweighted model. 
+```{r echo = FALSE, results = 'hide', error=FALSE, warning=FALSE, message=FALSE}
+Gobj = SCTransform(Gobj, assay = "Spatial", verbose = FALSE)
+```
+```{r prev2}
+GetAssayData(object = Gobj, slot = 'scale.data')[1:3,1:3]
+```
+
+Instead of using the whole set of features with could be more computationally expensive and result in a finer fit classification boundary in the clustering step, we can filter out features that have a lower cell-to-cell variance (ie remain fairly consistently expressed in all locations). This chunk can be removed. 
+```{r feature selection}
+Gobj = FindVariableFeatures(Gobj, selection.method = "vst", nfeatures = 2000)
+tsamp = head(VariableFeatures(Gobj), 10)
+ploto = VariableFeaturePlot(Gobj)
+ploto2 = LabelPoints(plot = ploto, points = tsamp, repel = TRUE, xnudge = 0, ynudge = 0)
+ploto2
+```
+
+-- Ask if standard mean=0 + variance=1 scaling should be done when previously using SCTransform (context of later analysis) --
+
+We run PCA on the data to extract 'latent features' from our original feature set. 
+```{r dimred}
+Gobj2 = RunPCA(Gobj, assay = "SCT", features = VariableFeatures(object = Gobj))
+DimPlot(Gobj2, reduction = "pca")
+```
+
+Feature heat maps for first ten principal components are shown below.
+```{r pca heatmaps}
+DimHeatmap(Gobj2, dims = 1:10, cells = 1000, balanced = TRUE)
+```
+
+We use a JackStraw procedure to determine validation scores for the PCA (without QC, this runtime would be larger).
+
+^^JackStraw cannot be used on biologically weighted data like in SCTranformed spatial transcriptomics data so this chunk is commented out and discarded. 10 principal components was chosen heuristically. 
+```{r validation}
+#Gobj2 = JackStraw(Gobj2, num.replicate = 50)
+#Gobj2 = ScoreJackStraw(Gobj2, dims = 1:10)
+#JackStrawPlot(Gobj2, dims = 1:10)
+#ElbowPlot(Gobj2)
+```
+
+--Ask about validation methods to determine optimal number of principal components--
+
+
+We create a KNN graph in the dim=10 (could be changed since it was set with no context/validation) principal component space using SCT-normalized euclidean distance. The cell aggregates are split into clusters iteratively with a resolution of .5 set because of the guide article. The spatial clusters are overlaid over the slice in the plot below. 
+```{r clusters}
+Gobj2 = FindNeighbors(Gobj2, dims = 1:10)
+Gobj2 = FindClusters(Gobj2, verbose = FALSE, resolution = .5)
+SpatialDimPlot(Gobj2, label = TRUE, label.size = 3)
+```
+
+We can use another dimensional reduction technique such as UMAP to project the large feature set onto a vastly lower dimensional manifold (10 dimensional in this case). https://umap-learn.readthedocs.io/en/latest/how_umap_works.html
+The clusters on the projected space are plotted below. 
+```{r nonlin clusters}
+Gobj2 = RunUMAP(Gobj2, reduction = "pca", dims = 1:10)
+DimPlot(Gobj2, reduction = "umap", label = TRUE)
+```
