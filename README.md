@@ -1,2 +1,2 @@
 # transcriptomics
-notebooks
+R notebooks
